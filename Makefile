@@ -54,6 +54,16 @@ else
 EXT =
 endif
 
+uname := $(shell test "${cross}" = "" && uname || echo ${cross})
+uname != test "${cross}" = "" && uname || echo ${cross}
+
+cc-Linux := ${CC}
+cc-Darwin := ${CC}
+cc-OpenBSD := ${CC}
+cc-Msys := /usr/bin/x86_64-w64-mingw32-gcc
+cc := ${cc-${uname}}
+CC := ${cc}
+
 # automatically enable runtime vector dispatch on x86/64 targets
 detect_x86_arch = $(shell $(CC) -dumpmachine | grep -E 'i[3-6]86|x86_64')
 ifneq ($(strip $(call detect_x86_arch)),)
@@ -76,7 +86,10 @@ endif
 # OS X linker doesn't support -soname, and use different extension
 # see: https://developer.apple.com/library/mac/documentation/DeveloperTools/Conceptual/DynamicLibraries/100-Articles/DynamicLibraryDesignGuidelines.html
 UNAME ?= $(shell uname)
-ifeq ($(UNAME), Darwin)
+ifeq ($(cross), Msys)
+	SHARED_EXT = dll
+	SHARED_EXT_VER = $(SHARED_EXT)
+else ifeq ($(UNAME), Darwin)
 	SHARED_EXT = dylib
 	SHARED_EXT_MAJOR = $(LIBVER_MAJOR).$(SHARED_EXT)
 	SHARED_EXT_VER = $(LIBVER).$(SHARED_EXT)
@@ -98,13 +111,13 @@ CLI_OBJS = $(CLI_SRCS:.c=.o)
 ## generate CLI and libraries in release mode (default for `make`)
 .PHONY: default
 default: DEBUGFLAGS=
-default: lib xxhsum_and_links
+default: lib
 
 C_SRCDIRS = . $(CLI_DIR) fuzz
 include build/make/multiconf.make
 
 .PHONY: all
-all: lib xxhsum xxhsum_inlinedXXH
+all: lib
 
 ## xxhsum is the command line interface (CLI)
 ifeq ($(DISPATCH),1)
@@ -149,14 +162,14 @@ endif
 LIBXXHASH_OBJS := xxhash.o $(if $(filter 1,$(LIBXXH_DISPATCH)),xxh_x86dispatch.o)
 $(eval $(call c_dynamic_library,$(LIBXXH),$(LIBXXHASH_OBJS)))
 
-libxxhash.$(SHARED_EXT_MAJOR): $(LIBXXH)
-	$(LN) -sf $< $@
+# libxxhash.$(SHARED_EXT_MAJOR): $(LIBXXH)
+# 	$(LN) -sf $< $@
 
-libxxhash.$(SHARED_EXT): libxxhash.$(SHARED_EXT_MAJOR)
-	$(LN) -sf $< $@
+# libxxhash.$(SHARED_EXT): libxxhash.$(SHARED_EXT_MAJOR)
+# 	$(LN) -sf $< $@
 
 .PHONY: libxxhash  ## generate dynamic xxhash library
-libxxhash: $(LIBXXH) libxxhash.$(SHARED_EXT_MAJOR) libxxhash.$(SHARED_EXT)
+libxxhash: $(LIBXXH)
 
 .PHONY: lib  ## generate static and dynamic xxhash libraries
 lib: libxxhash.a libxxhash
@@ -539,12 +552,16 @@ lint-unicode:
 # =========================================================
 ifneq (,$(filter Linux Darwin GNU/kFreeBSD GNU Haiku OpenBSD FreeBSD NetBSD DragonFly SunOS CYGWIN% , $(UNAME)))
 
-DESTDIR     ?=
 # directory variables: GNU conventions prefer lowercase
 # see https://www.gnu.org/prep/standards/html_node/Makefile-Conventions.html
 # support both lower and uppercase (BSD), use uppercase in script
-prefix      ?= /usr/local
-PREFIX      ?= $(prefix)
+prefix-Darwin-arm64  := /opt/homebrew
+prefix-Darwin-x86_64 := /usr/local
+prefix-Darwin += ${prefix-Darwin-${arch}}
+prefix-Linux         := /usr
+prefix-OpenBSD         := /usr
+prefix-Msys := /usr/x86_64-w64-mingw32
+PREFIX ?= ${prefix-${uname}}
 exec_prefix ?= $(PREFIX)
 EXEC_PREFIX ?= $(exec_prefix)
 libdir      ?= $(EXEC_PREFIX)/lib
@@ -615,33 +632,35 @@ libxxhash.pc: libxxhash.pc.in
 
 
 install_libxxhash.a: libxxhash.a
-	@echo Installing libxxhash.a
 	$(MAKE_DIR) $(DESTDIR)$(LIBDIR)
+	@echo $(INSTALL_DATA) libxxhash.a $(DESTDIR)$(LIBDIR)
 	$(INSTALL_DATA) libxxhash.a $(DESTDIR)$(LIBDIR)
 
 install_libxxhash: libxxhash
-	@echo Installing libxxhash
 	$(MAKE_DIR) $(DESTDIR)$(LIBDIR)
+	@echo $(INSTALL_PROGRAM) $(LIBXXH) $(DESTDIR)$(LIBDIR)
 	$(INSTALL_PROGRAM) $(LIBXXH) $(DESTDIR)$(LIBDIR)
-	ln -sf $(LIBXXH) $(DESTDIR)$(LIBDIR)/libxxhash.$(SHARED_EXT_MAJOR)
-	ln -sf libxxhash.$(SHARED_EXT_MAJOR) $(DESTDIR)$(LIBDIR)/libxxhash.$(SHARED_EXT)
+	# ln -sf $(LIBXXH) $(DESTDIR)$(LIBDIR)/libxxhash.$(SHARED_EXT_MAJOR)
+	# ln -sf libxxhash.$(SHARED_EXT_MAJOR) $(DESTDIR)$(LIBDIR)/libxxhash.$(SHARED_EXT)
 
 install_libxxhash.includes:
 	$(INSTALL) -d -m 755 $(DESTDIR)$(INCLUDEDIR)   # includes
+	@echo $(INSTALL_DATA) xxhash.h $(DESTDIR)$(INCLUDEDIR)
 	$(INSTALL_DATA) xxhash.h $(DESTDIR)$(INCLUDEDIR)
+	@echo $(INSTALL_DATA) xxh3.h $(DESTDIR)$(INCLUDEDIR) # for compatibility, will be removed in v0.9.0
 	$(INSTALL_DATA) xxh3.h $(DESTDIR)$(INCLUDEDIR) # for compatibility, will be removed in v0.9.0
 ifeq ($(LIBXXH_DISPATCH),1)
 	$(INSTALL_DATA) xxh_x86dispatch.h $(DESTDIR)$(INCLUDEDIR)
 endif
 
 install_libxxhash.pc: libxxhash.pc
-	@echo Installing pkgconfig
 	$(MAKE_DIR) $(DESTDIR)$(PKGCONFIGDIR)/
+	@echo $(INSTALL_DATA) libxxhash.pc $(DESTDIR)$(PKGCONFIGDIR)/
 	$(INSTALL_DATA) libxxhash.pc $(DESTDIR)$(PKGCONFIGDIR)/
 
 install_xxhsum: xxhsum
-	@echo Installing xxhsum
 	$(MAKE_DIR) $(DESTDIR)$(BINDIR)/
+	@echo $(INSTALL_PROGRAM) xxhsum$(EXT) $(DESTDIR)$(BINDIR)/xxhsum$(EXT)
 	$(INSTALL_PROGRAM) xxhsum$(EXT) $(DESTDIR)$(BINDIR)/xxhsum$(EXT)
 	ln -sf xxhsum$(EXT) $(DESTDIR)$(BINDIR)/xxh32sum$(EXT)
 	ln -sf xxhsum$(EXT) $(DESTDIR)$(BINDIR)/xxh64sum$(EXT)
@@ -649,8 +668,8 @@ install_xxhsum: xxhsum
 	ln -sf xxhsum$(EXT) $(DESTDIR)$(BINDIR)/xxh3sum$(EXT)
 
 install_man:
-	@echo Installing man pages
 	$(MAKE_DIR) $(DESTDIR)$(MANDIR)/
+	@echo $(INSTALL_DATA) $(MAN) $(DESTDIR)$(MANDIR)/xxhsum.1
 	$(INSTALL_DATA) $(MAN) $(DESTDIR)$(MANDIR)/xxhsum.1
 	ln -sf xxhsum.1 $(DESTDIR)$(MANDIR)/xxh32sum.1
 	ln -sf xxhsum.1 $(DESTDIR)$(MANDIR)/xxh64sum.1
@@ -659,7 +678,7 @@ install_man:
 
 .PHONY: install
 ## install libraries, CLI, links and man pages
-install: install_libxxhash.a install_libxxhash install_libxxhash.includes install_libxxhash.pc install_xxhsum install_man
+install: install_libxxhash.a install_libxxhash install_libxxhash.includes install_libxxhash.pc install_man
 	@echo xxhash installation completed
 
 .PHONY: uninstall
